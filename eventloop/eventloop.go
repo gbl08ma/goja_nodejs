@@ -1,6 +1,7 @@
 package eventloop
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +32,7 @@ type Immediate struct {
 }
 
 type EventLoop struct {
+	ctx      context.Context
 	vm       *goja.Runtime
 	jobChan  chan func()
 	jobCount int32
@@ -53,6 +55,7 @@ func NewEventLoop(opts ...Option) *EventLoop {
 	vm := goja.New()
 
 	loop := &EventLoop{
+		ctx:           context.Background(),
 		vm:            vm,
 		jobChan:       make(chan func()),
 		wakeupChan:    make(chan struct{}, 1),
@@ -95,6 +98,12 @@ func EnableConsole(enableConsole bool) Option {
 func WithRegistry(registry *require.Registry) Option {
 	return func(loop *EventLoop) {
 		loop.registry = registry
+	}
+}
+
+func WithContext(ctx context.Context) Option {
+	return func(loop *EventLoop) {
+		loop.ctx = ctx
 	}
 }
 
@@ -278,6 +287,9 @@ func (loop *EventLoop) run(inBackground bool) {
 LOOP:
 	for loop.jobCount > 0 {
 		select {
+		case <-loop.ctx.Done():
+			atomic.StoreInt32(&loop.canRun, 0)
+			break LOOP
 		case job := <-loop.jobChan:
 			job()
 		case <-loop.wakeupChan:
@@ -316,8 +328,12 @@ func (loop *EventLoop) addTimeout(f func(), timeout time.Duration) *Timer {
 		job: job{fn: f},
 	}
 	t.timer = time.AfterFunc(timeout, func() {
-		loop.jobChan <- func() {
+		select {
+		case <-loop.ctx.Done():
+			return
+		case loop.jobChan <- func() {
 			loop.doTimeout(t)
+		}:
 		}
 	})
 
@@ -403,9 +419,14 @@ L:
 			i.ticker.Stop()
 			break L
 		case <-i.ticker.C:
-			loop.jobChan <- func() {
+			select {
+			case <-loop.ctx.Done():
+				break L
+			case loop.jobChan <- func() {
 				loop.doInterval(i)
+			}:
 			}
+
 		}
 	}
 }

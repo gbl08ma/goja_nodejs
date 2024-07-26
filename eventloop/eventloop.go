@@ -101,6 +101,8 @@ func WithRegistry(registry *require.Registry) Option {
 	}
 }
 
+// WithContext sets the context for the EventLoop.
+// When the context is done, the event loop stops, destroys all pending jobs, and can not be started again.
 func WithContext(ctx context.Context) Option {
 	return func(loop *EventLoop) {
 		loop.ctx = ctx
@@ -289,6 +291,11 @@ LOOP:
 		select {
 		case <-loop.ctx.Done():
 			atomic.StoreInt32(&loop.canRun, 0)
+			// remove all aux jobs because the loop is not meant to run again
+			loop.auxJobsLock.Lock()
+			loop.auxJobs = loop.auxJobs[:0]
+			loop.auxJobsSpare = loop.auxJobsSpare[:0]
+			loop.auxJobsLock.Unlock()
 			break LOOP
 		case job := <-loop.jobChan:
 			job()
